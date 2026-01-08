@@ -20,7 +20,7 @@ genai.configure(api_key=api_key)
 generate_model = genai.GenerativeModel('gemini-3-flash-preview')
 evaluate_model = genai.GenerativeModel('gemini-2.5-pro')
 
-data_dir = "../data/omni_sample/img_audio_data"
+data_dir = "/Users/hyeb/selectstar/innov_project/25pj136"
 img_extensions = ('.jpg', '.jpeg', '.png', '.webp')
 audio_extensions = ('.mp3', '.wav', '.aac', '.flac')
 
@@ -142,7 +142,7 @@ def extract_json_str(raw_text: str) -> str:
 
 data_dict = {}
 
-for root, dirs, files in os.walk(data_dir):
+for root, dirs, files in os.walk(data_dir + "/data/omni_sample_data"):
     for file in files:
         name, ext = os.path.splitext(file)
         ext = ext.lower()
@@ -156,6 +156,63 @@ for root, dirs, files in os.walk(data_dir):
         elif ext in audio_extensions:
             data_dict[name]['audio'] = full_path
 
+DATA_SAVE_PATH = data_dir + "/omni_results/omni_backup.jsonl"
+OUTPUT_PATH = data_dir + "/omni_results"
+
+## === Omni Data Generation ===
+omni_datas = []
+with open(DATA_SAVE_PATH, "w", encoding="utf-8") as f:
+    for paths in tqdm(data_dict.values()):
+        try:
+            if paths["img"] is None or paths["audio"] is None:
+                continue
+            
+            img_path = paths["img"]
+            audio_path = paths["audio"]
+
+            img = PIL.Image.open(img_path)
+            audio = genai.upload_file(path=audio_path)
+
+            omni_response = generate_model.generate_content([omni_prompt, img, audio])
+
+            omni_json = extract_json_str(omni_response.text)
+            omni_dict = json.loads(omni_json)
+            omni_result = OqaOutput.model_validate(omni_dict)
+
+            record = {
+                "file_name": os.path.basename(img_path),
+                "img_path": img_path,
+                "audio_path": audio_path,
+                **omni_result.model_dump()
+            }
+
+            omni_datas.append(omni_dict)
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        
+        except Exception as e:
+            print(f"Error at {os.path.basename(img_path)}: {e}")
+
+norm_data = pd.json_normalize(omni_datas, sep="_").to_dict(orient="records")[0]
+pd.DataFrame(norm_data).to_csv(OUTPUT_PATH+"/omni_data_only.csv", index=False, encoding='utf-8-sig')
+print("Save a omni data file")
+
+
+
+## === Modality Check ===
+omni_records = []
+if os.path.exists(DATA_SAVE_PATH):
+    with open(DATA_SAVE_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            omni_records.append(json.loads(line))
+else:
+    print(f"{DATA_SAVE_PATH} 파일이 없습니다.")
+
+
+eval_results = []
+
+for item in tqdm(omni_datas, desc="Step 2: Modality Evaluating")
+
+## === Quality Check === 
 
 final_results = []
 

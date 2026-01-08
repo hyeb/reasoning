@@ -18,10 +18,12 @@ genai.configure(api_key=api_key)
 generate_model = genai.GenerativeModel('gemini-3-flash-preview')
 evaluate_model = genai.GenerativeModel('gemini-2.5-pro')
 
-data_dir = "../data/vlm_sample_data"
+data_dir = "/Users/hyeb/selectstar/innov_project/25pj136"
 valid_extensions = ('.jpg', '.jpeg', '.png', '.webp')
 # sample_image_path = data_file + "/data/drama_4.jpg"
 
+
+# for vqa generation
 vqa_prompt = """
 # Role
 너는 멀티모달 데이터셋 구축 전문가야. 주어진 이미지를 분석하여 VLM(Vision Language Model)의 성능을 평가하기 위한 고품질의 질의응답(QA) 세트를 생성해야 해.
@@ -54,6 +56,7 @@ class VqaOutput(BaseModel):
     reasoning: str
 
 
+# for modality evaluation
 vqa_eval_prompt = """
 # Role
 너는 시각적 단서들을 기반으로 문제를 해결하고 추론 과정을 증명하는 분석가야.
@@ -99,10 +102,16 @@ def extract_json_str(raw_text: str) -> str:
 
     return text
 
+def append_to_jsonl(path, data):
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(data, ensure_ascii=False) + '\n')
 
 
+
+
+# check image file path
 img_files = []
-for root, dirs, files in os.walk(data_dir):
+for root, dirs, files in os.walk(data_dir+"/data/vlm_sample_data"):
     for file in files:
         if file.lower().endswith(valid_extensions):
             img_path = os.path.join(root, file)
@@ -111,48 +120,95 @@ for root, dirs, files in os.walk(data_dir):
 print("img_files complete")
 
 
+
+
+VQA_SAVE_PATH = data_dir + "/vlm_results/vqa_backup.jsonl"
+OUTPUT_PATH = data_dir + "/vlm_results"
+
+
+## === VQA Generation === 
+vqa_results = []
+with open(VQA_SAVE_PATH, "w", encoding="utf-8") as f:
+    for img_path in tqdm(img_files[:1], desc="Step1: Generating VQA"):
+        try:
+            img = PIL.Image.open(img_path)
+            
+            vqa_response = generate_model.generate_content([vqa_prompt, img])
+        
+            vqa_json = extract_json_str(vqa_response.text)
+            vqa_dict = json.loads(vqa_json)
+            vqa_result = VqaOutput.model_validate(vqa_dict)
+
+            record = {
+                "file_name": os.path.basename(img_path),
+                # "img_path": img_path,
+                **vqa_result.model_dump()
+            }
+
+            vqa_results.append(vqa_dict)
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        
+        except Exception as e:
+            print("Error at {img_path}: {e}")
+
+norm_data = pd.json_normalize(vqa_results, sep='_').to_dict(orient='records')[0]
+pd.DataFrame(norm_data).to_csv(OUTPUT_PATH+"/vqa_only.csv", index=False, encoding='utf-8-sig')
+print("Save a VQA file")
+
+
+
+
+## === modality 검수 진행 ===
+# image + text 일 때, text만 입력으로 들어가도 정답을 맞추 수 있는지 체크
+vqa_records = []
+if os.path.exists(VQA_SAVE_PATH):
+    with open(VQA_SAVE_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            vqa_records.append(json.loads(line))
+else:
+    print(f"{VQA_SAVE_PATH} 파일이 없습니다. ")
+
+
+
 final_results = []
 
-for img_path in tqdm(img_files, desc="Processing Images"):
+for item in tqdm(vqa_records, desc="Step 2: Modality Evaluating"):
+    file_name = item.get("file_name")
+
     try:
-        img = PIL.Image.open(img_path)
+        question_txt = item.get("question")
+        curr_vqa_eval_prompt = vqa_eval_prompt.format(question = question_txt)
 
+        mod_eval_response = evaluate_model.generate_content(curr_vqa_eval_prompt)
 
-        vqa_response = generate_model.generate_content([vqa_prompt, img])
-        
-        vqa_json = extract_json_str(vqa_response.text)
-        vqa_dict = json.loads(vqa_json)
-        vqa_result = VqaOutput.model_validate(vqa_dict)
-
-
-        #eval
-        curr_vqa_eval_prompt = vqa_eval_prompt.format(
-            question = vqa_result.question
-        )
-
-        eval_response = evaluate_model.generate_content([curr_vqa_eval_prompt, img])
-
-        eval_json = extract_json_str(eval_response.text)
+        eval_json = extract_json_str(mod_eval_response.text)
         eval_dict = json.loads(eval_json)
         eval_result = EvalOutput.model_validate(eval_dict)
 
 
+        ## --- 통/불통 확인 ---
+        is
 
         combined = {
-            "file_name": os.path.basename(img_path),
-            **vqa_result.model_dump(),
+            "file_name": file_name,
+            **item, 
             **eval_result.model_dump()
         }
 
-        comb_data = pd.json_normalize(combined, sep='_').to_dict(orient='records')[0]
+        comb_data = pd.json_normalize(combined, sep="_").to_dict(orient="records")[0]
         final_results.append(comb_data)
 
     except Exception as e:
-        print(f"Error at {img_path}: {e}")
-        continue
+        print(f"Error {file_name}: {e}")
 
 
-pd.DataFrame(final_results).to_csv("final_dataset.csv", index=False, encoding='utf-8-sig')
-print("Save a file")
+if final_results:
+    pd.DataFrame(final_results).to_csv(OUTPUT_PATH+"/final_dataset.csv", index=False, encoding='utf-8-sig')
 
+    print("=== Save a final file === ")
+
+
+
+## === Quality 검수 진행 === 
+# 생성된 질문에 대한 품질 검수
 
